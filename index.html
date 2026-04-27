@@ -71,7 +71,6 @@
       50%       { opacity: 0.15; }
     }
 
-    /* progress bar under meta */
     .bar-wrap {
       height: 2px;
       background: #161612;
@@ -87,10 +86,7 @@
     }
 
     /* ── TABLE ── */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
+    table { width: 100%; border-collapse: collapse; }
 
     thead th {
       padding: 6px 14px;
@@ -100,6 +96,7 @@
       border-bottom: 1px solid #161612;
       text-align: left;
       text-transform: uppercase;
+      white-space: nowrap;
     }
 
     tbody tr {
@@ -111,10 +108,11 @@
     tbody tr:hover { background: #10100c; }
 
     tbody td {
-      padding: 13px 14px;
+      padding: 12px 14px;
       font-size: 0.86rem;
       border-bottom: 1px solid #0f0f0c;
       vertical-align: middle;
+      white-space: nowrap;
     }
 
     @keyframes appear {
@@ -122,16 +120,19 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    .col-call  { color: #f5c842; font-size: 1rem; letter-spacing: 0.1em; }
-    .col-reg   { color: #fbbf24; font-size: 0.78rem; opacity: 0.7; }
-    .col-type  { color: #a3a3a0; font-size: 0.8rem; }
-    .col-alt   { color: #7dd3fc; }
-    .col-spd   { color: #86efac; }
-    .col-hdg   { color: #ddd0b0; }
-    .col-dst   { color: #888; font-size: 0.8rem; }
+    .col-call    { color: #f5c842; font-size: 1rem; letter-spacing: 0.1em; }
+    .col-reg     { color: #fbbf24; font-size: 0.72rem; opacity: 0.6; }
+    .col-airline { color: #c4b5fd; }
+    .col-route   { color: #6ee7b7; letter-spacing: 0.05em; }
+    .col-route-dim { opacity: 0.35; }
+    .col-type    { color: #a3a3a0; font-size: 0.8rem; }
+    .col-alt     { color: #7dd3fc; }
+    .col-spd     { color: #86efac; }
+    .col-hdg     { color: #ddd0b0; }
+    .col-dst     { color: #666; font-size: 0.8rem; }
 
-    .tag-air    { color: #4ade80; font-size: 0.72rem; letter-spacing: 0.15em; }
-    .tag-ground { color: #f87171; font-size: 0.72rem; letter-spacing: 0.15em; }
+    .tag-air      { color: #4ade80; font-size: 0.7rem; letter-spacing: 0.15em; }
+    .tag-landing  { color: #fb923c; font-size: 0.7rem; letter-spacing: 0.15em; }
 
     /* ── EMPTY / ERROR STATES ── */
     .state-row td {
@@ -174,6 +175,8 @@
   <thead>
     <tr>
       <th>VUELO</th>
+      <th>AEROLÍNEA</th>
+      <th>RUTA</th>
       <th>AERONAVE</th>
       <th>ALTITUD</th>
       <th>VELOCIDAD</th>
@@ -183,23 +186,29 @@
     </tr>
   </thead>
   <tbody id="body">
-    <tr class="state-row"><td colspan="7">ESPERANDO SEÑAL GPS…</td></tr>
+    <tr class="state-row"><td colspan="9">ESPERANDO SEÑAL GPS…</td></tr>
   </tbody>
 </table>
 
 <footer>
-  FUENTE: ADSB.LOL · ADS-B EXCHANGE &nbsp;·&nbsp; RADIO: 10 KM &nbsp;·&nbsp; REFRESCO: 15 s &nbsp;·&nbsp; CLICK → FLIGHTRADAR24
+  ADSB.LOL · ADSBDB.COM &nbsp;·&nbsp; RADIO: 10 KM &nbsp;·&nbsp; REFRESCO: 15 s &nbsp;·&nbsp; CLICK → FLIGHTRADAR24
 </footer>
 
 <script>
   const RADIUS_KM   = 10;
-  const RADIUS_NM   = RADIUS_KM / 1.852; // adsb.lol uses nautical miles
+  const RADIUS_NM   = RADIUS_KM / 1.852;
   const INTERVAL_MS = 15_000;
+  const LANDED_TTL  = 60_000; // ms to keep recently-landed flights visible
 
   let userLat, userLon;
   let countdownId;
 
-  // ── helpers ───────────────────────────────────────────────────────────────
+  // hex → { seenAirborne: bool, landedAt: number|null }
+  const flightState = new Map();
+  // callsign → { airline, origin, dest } | null
+  const routeCache  = new Map();
+
+  // ── formatting helpers ────────────────────────────────────────────────────
 
   function fmtAlt(ft) {
     if (ft == null || ft === 'ground') return '—';
@@ -222,6 +231,52 @@
     return `${Math.round(deg)}° ${arrow[i]}${dirs[i]}`;
   }
 
+  // ── recently-landed state ─────────────────────────────────────────────────
+
+  function tickState(hex, onGround) {
+    const s = flightState.get(hex) || { seenAirborne: false, landedAt: null };
+    if (!onGround) {
+      s.seenAirborne = true;
+      s.landedAt     = null;
+    } else if (s.seenAirborne && s.landedAt == null) {
+      s.landedAt = Date.now();
+    }
+    flightState.set(hex, s);
+  }
+
+  function shouldShow(hex, onGround) {
+    if (!onGround) return true;
+    const s = flightState.get(hex);
+    if (!s || !s.seenAirborne || s.landedAt == null) return false;
+    return (Date.now() - s.landedAt) < LANDED_TTL;
+  }
+
+  // ── route / airline lookup (adsbdb.com) ───────────────────────────────────
+
+  async function fetchRoute(callsign) {
+    if (!callsign || callsign.length < 4) return null;
+    if (routeCache.has(callsign)) return routeCache.get(callsign);
+
+    try {
+      const res = await fetch(`https://api.adsbdb.com/v0/callsign/${callsign}`);
+      if (!res.ok) { routeCache.set(callsign, null); return null; }
+      const data = await res.json();
+      const fr   = data?.response?.flightroute;
+      if (!fr)   { routeCache.set(callsign, null); return null; }
+
+      const route = {
+        airline: fr.airline?.name  || null,
+        origin:  fr.origin?.iata_code  || fr.origin?.icao_code  || null,
+        dest:    fr.destination?.iata_code || fr.destination?.icao_code || null,
+      };
+      routeCache.set(callsign, route);
+      return route;
+    } catch {
+      routeCache.set(callsign, null);
+      return null;
+    }
+  }
+
   // ── fetch & render ────────────────────────────────────────────────────────
 
   async function update() {
@@ -239,7 +294,13 @@
       return;
     }
 
-    const ac = (data.ac || []);
+    const raw = data.ac || [];
+
+    // update recently-landed state for every aircraft seen
+    raw.forEach(a => tickState(a.hex, a.alt_baro === 'ground'));
+
+    // filter: only airborne + recently landed
+    const ac = raw.filter(a => shouldShow(a.hex, a.alt_baro === 'ground'));
 
     // sort: airborne first, then by altitude desc
     ac.sort((a, b) => {
@@ -254,37 +315,55 @@
 
     const tbody = document.getElementById('body');
     if (ac.length === 0) {
-      setBodyState(`SIN TRÁFICO EN ${RADIUS_KM} KM`);
+      setBodyState(`SIN TRÁFICO AÉREO EN ${RADIUS_KM} KM`);
       startBar();
       return;
     }
 
-    tbody.innerHTML = ac.map((a, i) => {
-      const callsign = (a.flight || '').trim() || a.hex.toUpperCase();
-      const reg      = a.r  ? `<div class="col-reg">${a.r}</div>` : '';
-      const type     = a.t  || '';
-      const onGround = a.alt_baro === 'ground';
-      const delay    = i * 40;
+    // fetch routes in parallel (cached — only new callsigns hit the network)
+    const callsigns = ac.map(a => (a.flight || '').trim());
+    const routes    = await Promise.all(callsigns.map(cs => fetchRoute(cs)));
 
-      return `<tr style="animation-delay:${delay}ms"
+    tbody.innerHTML = ac.map((a, i) => {
+      const callsign = callsigns[i] || a.hex.toUpperCase();
+      const route    = routes[i];
+      const onGround = a.alt_baro === 'ground';
+      const reg      = a.r ? `<div class="col-reg">${a.r}</div>` : '';
+
+      const airlineHtml = route?.airline
+        ? `<span class="col-airline">${route.airline}</span>`
+        : '—';
+
+      let routeHtml = '—';
+      if (route?.origin || route?.dest) {
+        const o = route.origin || '<span class="col-route-dim">???</span>';
+        const d = route.dest   || '<span class="col-route-dim">???</span>';
+        routeHtml = `${o} <span class="col-route-dim">→</span> ${d}`;
+      }
+
+      const statusHtml = onGround
+        ? '<span class="tag-landing">ATERRIZANDO</span>'
+        : '<span class="tag-air">EN VUELO</span>';
+
+      return `<tr style="animation-delay:${i * 40}ms"
                   data-cs="${callsign}"
                   data-hex="${a.hex}">
         <td class="col-call">${callsign}${reg}</td>
-        <td class="col-type">${type}</td>
+        <td>${airlineHtml}</td>
+        <td class="col-route">${routeHtml}</td>
+        <td class="col-type">${a.t || '—'}</td>
         <td class="col-alt">${fmtAlt(a.alt_baro)}</td>
         <td class="col-spd">${fmtSpd(a.gs)}</td>
         <td class="col-hdg">${hdgStr(a.track)}</td>
         <td class="col-dst">${fmtDst(a.dst)}</td>
-        <td>${onGround
-          ? '<span class="tag-ground">EN TIERRA</span>'
-          : '<span class="tag-air">EN VUELO</span>'}</td>
+        <td>${statusHtml}</td>
       </tr>`;
     }).join('');
 
     tbody.querySelectorAll('tr[data-cs]').forEach(row => {
       row.addEventListener('click', () => {
-        const cs  = row.dataset.cs.trim();
-        const hex = row.dataset.hex;
+        const cs   = row.dataset.cs.trim();
+        const hex  = row.dataset.hex;
         const slug = cs.length > 2 ? encodeURIComponent(cs) : hex;
         window.open(`https://www.flightradar24.com/${slug}`, '_blank', 'noopener');
       });
@@ -311,7 +390,7 @@
 
   function setBodyState(msg, isErr = false) {
     document.getElementById('body').innerHTML =
-      `<tr class="state-row"><td colspan="7" class="${isErr ? 'err' : ''}">${msg}</td></tr>`;
+      `<tr class="state-row"><td colspan="9" class="${isErr ? 'err' : ''}">${msg}</td></tr>`;
   }
 
   // ── init ──────────────────────────────────────────────────────────────────
