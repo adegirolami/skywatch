@@ -195,12 +195,13 @@
 </footer>
 
 <script>
-  const RADIUS_KM   = 10;
+  const CENTER_LAT  = -34.6037;  // Obelisco, Buenos Aires
+  const CENTER_LON  = -58.3816;
+  const RADIUS_KM   = 60;
   const RADIUS_NM   = RADIUS_KM / 1.852;
   const INTERVAL_MS = 15_000;
-  const LANDED_TTL  = 60_000; // ms to keep recently-landed flights visible
+  const LANDED_TTL  = 60_000;
 
-  let userLat, userLon;
   let countdownId;
 
   // hex → { seenAirborne: bool, landedAt: number|null }
@@ -280,7 +281,7 @@
   // ── fetch & render ────────────────────────────────────────────────────────
 
   async function update() {
-    const target = `https://api.adsb.lol/v2/lat/${userLat}/lon/${userLon}/dist/${RADIUS_NM.toFixed(1)}`;
+    const target = `https://api.adsb.lol/v2/lat/${CENTER_LAT}/lon/${CENTER_LON}/dist/${RADIUS_NM.toFixed(1)}`;
     const url    = `https://corsproxy.io/?${encodeURIComponent(target)}`;
 
     let data;
@@ -396,27 +397,9 @@
   // ── init ──────────────────────────────────────────────────────────────────
 
   function init() {
-    if (!navigator.geolocation) {
-      document.getElementById('loc').textContent = 'GEOLOCALIZACIÓN NO DISPONIBLE';
-      setBodyState('TU NAVEGADOR NO SOPORTA GEOLOCALIZACIÓN', true);
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      pos => {
-        userLat = pos.coords.latitude;
-        userLon = pos.coords.longitude;
-        document.getElementById('loc').textContent =
-          `${userLat.toFixed(5)}°  ${userLon.toFixed(5)}°  ·  RADIO ${RADIUS_KM} KM`;
-        update();
-        setInterval(update, INTERVAL_MS);
-      },
-      () => {
-        document.getElementById('loc').textContent = 'PERMISO DE UBICACIÓN DENEGADO';
-        setBodyState('NECESITÁS PERMITIR EL ACCESO A TU UBICACIÓN', true);
-      },
-      { enableHighAccuracy: false, timeout: 10_000 }
-    );
+    document.getElementById('loc').textContent = `BUENOS AIRES · CABA + GBA · RADIO ${RADIUS_KM} KM`;
+    update();
+    setInterval(update, INTERVAL_MS);
   }
 
   init();
