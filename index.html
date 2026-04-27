@@ -225,7 +225,8 @@
   // ── fetch & render ────────────────────────────────────────────────────────
 
   async function update() {
-    const url = `https://api.adsb.lol/v2/lat/${userLat}/lon/${userLon}/dist/${RADIUS_NM.toFixed(1)}`;
+    const target = `https://api.adsb.lol/v2/lat/${userLat}/lon/${userLon}/dist/${RADIUS_NM.toFixed(1)}`;
+    const url    = `https://corsproxy.io/?${encodeURIComponent(target)}`;
 
     let data;
     try {
